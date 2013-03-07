@@ -36,6 +36,18 @@
 #define SENSOR_IOCTL_SET_SCENE_MODE     _IOW('o', 5, __u8)
 #define SENSOR_IOCTL_SET_AF_MODE        _IOW('o', 6, __u8)
 #define SENSOR_IOCTL_GET_AF_STATUS      _IOW('o', 7, __u8)
+#define SENSOR_IOCTL_SET_CAMERA         _IOW('o', 8, __u8)
+
+typedef struct
+{
+     unsigned int addr;
+     unsigned int val;
+} register_setting;
+
+#define ASUS_CUSTOM_IOCTL_REG_SET 120
+#define ASUS_CUSTOM_IOCTL_REG_GET 121
+#define SENSOR_CUSTOM_IOCTL_REG_SET _IOW('o', ASUS_CUSTOM_IOCTL_REG_SET, register_setting)
+#define SENSOR_CUSTOM_IOCTL_REG_GET _IOWR('o', ASUS_CUSTOM_IOCTL_REG_GET, register_setting)
 
 enum {
     ASUS_CUSTOM_IOCTL_NUMBASE = 40,
@@ -63,7 +75,11 @@ enum {
     ASUS_CUSTOM_IOCTL_SET_AE_LOCK,
     ASUS_CUSTOM_IOCTL_SET_AWB_LOCK,
     ASUS_CUSTOM_IOCTL_GET_AE_LOCK,
-    ASUS_CUSTOM_IOCTL_GET_AWB_LOCK
+    ASUS_CUSTOM_IOCTL_GET_AWB_LOCK,
+    ASUS_CUSTOM_IOCTL_INITIAL,
+    ASUS_CUSTOM_IOCTL_SET_AF_CONTROL,
+    ASUS_CUSTOM_IOCTL_SET_TOUCH_AE,
+    ASUS_CUSTOM_IOCTL_SET_ICATCH_AE_WINDOW,
 };
 
 enum {
@@ -98,6 +114,15 @@ typedef struct
 
 typedef struct
 {
+    int win_w;
+    int win_h;
+    int win_x;
+    int win_y;
+    int zoom;
+} custom_ae_win_cmd_package;
+
+typedef struct
+{
     unsigned int exposure;
     unsigned int vts;
 } custom_et_value_package;
@@ -121,6 +146,7 @@ typedef struct
     int cmd;
     unsigned int flash_rom_start_address;
     unsigned int program_size;
+    char* binfile_path;
 } custom_fw_update_rom_package;
 
 typedef struct
@@ -165,6 +191,10 @@ typedef enum {
 #define SENSOR_CUSTOM_IOCTL_SET_AWB_LOCK      _IOW('o', ASUS_CUSTOM_IOCTL_SET_AWB_LOCK, __u32)
 #define SENSOR_CUSTOM_IOCTL_GET_AE_LOCK       _IOWR('o', ASUS_CUSTOM_IOCTL_GET_AE_LOCK, __u32)
 #define SENSOR_CUSTOM_IOCTL_GET_AWB_LOCK      _IOWR('o', ASUS_CUSTOM_IOCTL_GET_AWB_LOCK, __u32)
+#define SENSOR_CUSTOM_IOCTL_INITIAL           _IOWR('o', ASUS_CUSTOM_IOCTL_INITIAL, __u32)
+#define SENSOR_CUSTOM_IOCTL_SET_AF_CONTROL _IOW('o', ASUS_CUSTOM_IOCTL_SET_AF_CONTROL, __s16)
+#define SENSOR_CUSTOM_IOCTL_SET_TOUCH_AE      _IOWR('o', ASUS_CUSTOM_IOCTL_SET_TOUCH_AE, custom_ae_win_cmd_package)
+#define SENSOR_CUSTOM_IOCTL_SET_ICATCH_AE_WINDOW     _IOW('o', ASUS_CUSTOM_IOCTL_SET_ICATCH_AE_WINDOW, custom_ae_win_cmd_package)
 
 enum {
     YUV_ColorEffect = 0,
