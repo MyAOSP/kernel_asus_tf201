@@ -2,7 +2,7 @@
  * arch/arm/mach-tegra/board-harmony-sdhci.c
  *
  * Copyright (C) 2010 Google, Inc.
- * Copyright (C) 2011 NVIDIA Corporation.
+ * Copyright (C) 2011-2012 NVIDIA Corporation.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -28,6 +28,7 @@
 #include <mach/irqs.h>
 #include <mach/iomap.h>
 #include <mach/sdhci.h>
+#include <mach/board-cardhu-misc.h>
 
 #include "gpio-names.h"
 #include "board.h"
@@ -36,6 +37,7 @@
 #define CARDHU_WLAN_PWR	TEGRA_GPIO_PD4
 #define CARDHU_WLAN_RST	TEGRA_GPIO_PD3
 #define CARDHU_WLAN_WOW	TEGRA_GPIO_PO4
+#define CARDHU_SDIO_WOW	TEGRA_GPIO_PB6
 #define CARDHU_SD_CD TEGRA_GPIO_PI5
 #define CARDHU_SD_WP TEGRA_GPIO_PT3
 #define PM269_SD_WP -1
@@ -63,11 +65,20 @@ static struct resource wifi_resource[] = {
 	},
 };
 
-static struct platform_device cardhu_wifi_device = {
+static struct platform_device broadcom_wifi_device = {
 	.name		= "bcm4329_wlan",
 	.id		= 1,
 	.num_resources	= 1,
 	.resource	= wifi_resource,
+	.dev		= {
+		.platform_data = &cardhu_wifi_control,
+	},
+};
+
+static struct platform_device marvell_wifi_device = {
+	.name		= "mrvl8797_wlan",
+	.id		= 1,
+	.num_resources	= 0,
 	.dev		= {
 		.platform_data = &cardhu_wifi_control,
 	},
@@ -112,6 +123,7 @@ static struct resource sdhci_resource3[] = {
 	},
 };
 
+#ifdef CONFIG_MMC_EMBEDDED_SDIO
 static struct embedded_sdio_data embedded_sdio_data2 = {
 	.cccr   = {
 		.sdio_vsn       = 2,
@@ -126,18 +138,26 @@ static struct embedded_sdio_data embedded_sdio_data2 = {
 		.device         = 0x4329,
 	},
 };
+#endif
 
 static struct tegra_sdhci_platform_data tegra_sdhci_platform_data2 = {
 	.mmc_data = {
 		.register_status_notify	= cardhu_wifi_status_register,
+#ifdef CONFIG_MMC_EMBEDDED_SDIO
 		.embedded_sdio = &embedded_sdio_data2,
-		.built_in = 1,
+#endif
+		.built_in = -1,
+		.ocr_mask = MMC_OCR_1V8_MASK,
 	},
+#ifndef CONFIG_MMC_EMBEDDED_SDIO
+	.pm_flags = MMC_PM_KEEP_POWER,
+#endif
+	.wow_gpio = -1,
 	.cd_gpio = -1,
 	.wp_gpio = -1,
 	.power_gpio = -1,
-/*	.tap_delay = 6,
-	.is_voltage_switch_supported = false,
+	.tap_delay = 0x0F,
+/*	.is_voltage_switch_supported = false,
 	.vdd_rail_name = NULL,
 	.slot_rail_name = NULL,
 	.vdd_max_uv = -1,
@@ -147,11 +167,12 @@ static struct tegra_sdhci_platform_data tegra_sdhci_platform_data2 = {
 };
 
 static struct tegra_sdhci_platform_data tegra_sdhci_platform_data0 = {
+	.wow_gpio = -1,
 	.cd_gpio = CARDHU_SD_CD,
 	.wp_gpio = CARDHU_SD_WP,
 	.power_gpio = -1,
-/*	.tap_delay = 6,
-	.is_voltage_switch_supported = true,
+	.tap_delay = 0x0F,
+/*	.is_voltage_switch_supported = true,
 	.vdd_rail_name = "vddio_sdmmc1",
 	.slot_rail_name = "vddio_sd_slot",
 	.vdd_max_uv = 3320000,
@@ -161,6 +182,7 @@ static struct tegra_sdhci_platform_data tegra_sdhci_platform_data0 = {
 };
 
 static struct tegra_sdhci_platform_data tegra_sdhci_platform_data3 = {
+	.wow_gpio = -1,
 	.cd_gpio = -1,
 	.wp_gpio = -1,
 	.power_gpio = -1,
@@ -250,6 +272,7 @@ static int cardhu_wifi_reset(int on)
 static int __init cardhu_wifi_init(void)
 {
 	int rc;
+	int commchip_id = tegra_get_commchip_id();
 
 	rc = gpio_request(CARDHU_WLAN_PWR, "wlan_power");
 	if (rc)
@@ -261,10 +284,6 @@ static int __init cardhu_wifi_init(void)
 	if (rc)
 		pr_err("WLAN_WOW gpio request failed:%d\n", rc);
 
-	tegra_gpio_enable(CARDHU_WLAN_PWR);
-	tegra_gpio_enable(CARDHU_WLAN_RST);
-	tegra_gpio_enable(CARDHU_WLAN_WOW);
-
 	rc = gpio_direction_output(CARDHU_WLAN_PWR, 0);
 	if (rc)
 		pr_err("WLAN_PWR gpio direction configuration failed:%d\n", rc);
@@ -275,9 +294,27 @@ static int __init cardhu_wifi_init(void)
 	if (rc)
 		pr_err("WLAN_WOW gpio direction configuration failed:%d\n", rc);
 
-	platform_device_register(&cardhu_wifi_device);
+	if (commchip_id == COMMCHIP_MARVELL_SD8797)
+		platform_device_register(&marvell_wifi_device);
+	else
+		platform_device_register(&broadcom_wifi_device);
+
 	return 0;
 }
+
+#ifdef CONFIG_TEGRA_PREPOWER_WIFI
+static int __init cardhu_wifi_prepower(void)
+{
+	if (!machine_is_cardhu())
+		return 0;
+
+	cardhu_wifi_power(1);
+
+	return 0;
+}
+
+subsys_initcall_sync(cardhu_wifi_prepower);
+#endif
 
 int __init cardhu_sdhci_init(void)
 {
@@ -288,7 +325,26 @@ int __init cardhu_sdhci_init(void)
 		(board_info.board_id == BOARD_PM305) ||
 		(board_info.board_id == BOARD_PM311)) {
 			tegra_sdhci_platform_data0.wp_gpio = PM269_SD_WP;
-			tegra_sdhci_platform_data2.max_clk_limit = 12000000;
+	}
+
+	if(tegra3_get_project_id()==TEGRA3_PROJECT_TF500T) {
+		tegra_sdhci_platform_data2.mmc_data.built_in = 1;
+	} else {
+		// Get Wi-Fi PCB_ID
+		switch (tegra3_query_wifi_module_pcbid()){
+
+		case 0: // AW-NH660
+		case 2: // AW-NH665
+			tegra_sdhci_platform_data2.mmc_data.built_in = 1;
+			break;
+
+		case 1: // AW-NH615
+		case 3: // Murata
+		default:
+			tegra_sdhci_platform_data2.mmc_data.built_in = 0;
+			tegra_sdhci_platform_data2.wow_gpio = CARDHU_SDIO_WOW;
+			break;
+		}
 	}
 
 	platform_device_register(&tegra_sdhci_device3);

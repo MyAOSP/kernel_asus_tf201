@@ -30,6 +30,7 @@
 
 #include <asm/mach-types.h>
 
+#include <linux/clk.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
@@ -39,7 +40,7 @@
 #include <linux/switch.h>
 #endif
 
-#include <mach/tegra_max98088_pdata.h>
+#include <mach/tegra_asoc_pdata.h>
 
 #include <sound/core.h>
 #include <sound/jack.h>
@@ -81,9 +82,11 @@ const char *tegra_max98088_i2s_dai_name[TEGRA30_NR_I2S_IFC] = {
 };
 #endif
 
+extern int g_is_call_mode;
+
 struct tegra_max98088 {
 	struct tegra_asoc_utils_data util_data;
-	struct tegra_max98088_platform_data *pdata;
+	struct tegra_asoc_platform_data *pdata;
 	int gpio_requested;
 	bool init_done;
 	int is_call_mode;
@@ -93,6 +96,7 @@ struct tegra_max98088 {
 #endif
 	enum snd_soc_bias_level bias_level;
 	struct snd_soc_card *pcard;
+	volatile int clock_enabled;
 };
 
 static int tegra_call_mode_info(struct snd_kcontrol *kcontrol,
@@ -156,6 +160,7 @@ static int tegra_call_mode_put(struct snd_kcontrol *kcontrol,
 	}
 
 	machine->is_call_mode = is_call_mode_new;
+	g_is_call_mode = machine->is_call_mode;
 
 	return 1;
 }
@@ -211,8 +216,10 @@ static int tegra_max98088_hw_params(struct snd_pcm_substream *substream,
 #ifndef CONFIG_ARCH_TEGRA_2x_SOC
 	struct tegra30_i2s *i2s = snd_soc_dai_get_drvdata(cpu_dai);
 #endif
-	int srate, mclk, sample_size;
+	int srate, mclk, sample_size, i2s_daifmt;
 	int err;
+	struct clk *clk;
+	int rate;
 
 	switch (params_format(params)) {
 	case SNDRV_PCM_FORMAT_S16_LE:
@@ -244,6 +251,32 @@ static int tegra_max98088_hw_params(struct snd_pcm_substream *substream,
 		break;
 	}
 
+
+#if defined(CONFIG_ARCH_TEGRA_2x_SOC)
+	clk = clk_get_sys(NULL, "cdev1");
+#else
+	clk = clk_get_sys("extern1", NULL);
+#endif
+	if (IS_ERR(clk)) {
+		dev_err(card->dev, "Can't retrieve clk cdev1\n");
+		err = PTR_ERR(clk);
+		return err;
+	}
+
+	rate = clk_get_rate(clk);
+	printk("extern1 rate=%d\n",rate);
+
+#if TEGRA30_I2S_MASTER_PLAYBACK
+	i2s_daifmt = SND_SOC_DAIFMT_I2S |
+				SND_SOC_DAIFMT_NB_NF |
+				SND_SOC_DAIFMT_CBS_CFS;
+#else
+	i2s_daifmt = SND_SOC_DAIFMT_I2S |
+				SND_SOC_DAIFMT_NB_NF |
+				SND_SOC_DAIFMT_CBM_CFM;
+	mclk = rate;
+#endif
+
 	err = tegra_asoc_utils_set_rate(&machine->util_data, srate, mclk);
 	if (err < 0) {
 		if (!(machine->util_data.set_mclk % mclk))
@@ -256,19 +289,13 @@ static int tegra_max98088_hw_params(struct snd_pcm_substream *substream,
 
 	tegra_asoc_utils_lock_clk_rate(&machine->util_data, 1);
 
-	err = snd_soc_dai_set_fmt(codec_dai,
-					SND_SOC_DAIFMT_I2S |
-					SND_SOC_DAIFMT_NB_NF |
-					SND_SOC_DAIFMT_CBS_CFS);
+	err = snd_soc_dai_set_fmt(codec_dai,i2s_daifmt);
 	if (err < 0) {
 		dev_err(card->dev, "codec_dai fmt not set\n");
 		return err;
 	}
 
-	err = snd_soc_dai_set_fmt(cpu_dai,
-					SND_SOC_DAIFMT_I2S |
-					SND_SOC_DAIFMT_NB_NF |
-					SND_SOC_DAIFMT_CBS_CFS);
+	err = snd_soc_dai_set_fmt(cpu_dai, i2s_daifmt);
 	if (err < 0) {
 		dev_err(card->dev, "cpu_dai fmt not set\n");
 		return err;
@@ -411,6 +438,7 @@ static int tegra_hw_free(struct snd_pcm_substream *substream)
 	struct tegra_max98088 *machine = snd_soc_card_get_drvdata(rtd->card);
 
 	tegra_asoc_utils_lock_clk_rate(&machine->util_data, 0);
+
 	return 0;
 }
 
@@ -532,7 +560,7 @@ static void tegra_max98088_shutdown(struct snd_pcm_substream *substream)
 	 } else {
 
 		if (!i2s->is_call_mode_rec)
-			return 0;
+			return;
 
 		i2s->is_call_mode_rec = 0;
 
@@ -818,7 +846,7 @@ static int tegra_max98088_event_int_spk(struct snd_soc_dapm_widget *w,
 	struct snd_soc_dapm_context *dapm = w->dapm;
 	struct snd_soc_card *card = dapm->card;
 	struct tegra_max98088 *machine = snd_soc_card_get_drvdata(card);
-	struct tegra_max98088_platform_data *pdata = machine->pdata;
+	struct tegra_asoc_platform_data *pdata = machine->pdata;
 
 	if (!(machine->gpio_requested & GPIO_SPKR_EN))
 		return 0;
@@ -835,7 +863,7 @@ static int tegra_max98088_event_hp(struct snd_soc_dapm_widget *w,
 	struct snd_soc_dapm_context *dapm = w->dapm;
 	struct snd_soc_card *card = dapm->card;
 	struct tegra_max98088 *machine = snd_soc_card_get_drvdata(card);
-	struct tegra_max98088_platform_data *pdata = machine->pdata;
+	struct tegra_asoc_platform_data *pdata = machine->pdata;
 
 	if (!(machine->gpio_requested & GPIO_HP_MUTE))
 		return 0;
@@ -881,7 +909,7 @@ static int tegra_max98088_init(struct snd_soc_pcm_runtime *rtd)
 	struct snd_soc_dapm_context *dapm = &codec->dapm;
 	struct snd_soc_card *card = codec->card;
 	struct tegra_max98088 *machine = snd_soc_card_get_drvdata(card);
-	struct tegra_max98088_platform_data *pdata = machine->pdata;
+	struct tegra_asoc_platform_data *pdata = machine->pdata;
 #ifndef CONFIG_ARCH_TEGRA_2x_SOC
 	struct tegra30_i2s *i2s = snd_soc_dai_get_drvdata(rtd->cpu_dai);
 #endif
@@ -898,6 +926,8 @@ static int tegra_max98088_init(struct snd_soc_pcm_runtime *rtd)
 	machine->init_done = true;
 
 	machine->pcard = card;
+	machine->bias_level = SND_SOC_BIAS_STANDBY;
+	machine->clock_enabled = 1;
 
 	if (gpio_is_valid(pdata->gpio_spkr_en)) {
 		ret = gpio_request(pdata->gpio_spkr_en, "spkr_en");
@@ -979,6 +1009,10 @@ static int tegra_max98088_init(struct snd_soc_pcm_runtime *rtd)
 	if (ret < 0)
 		return ret;
 
+	ret = tegra_asoc_utils_register_ctls(&machine->util_data);
+	if (ret < 0)
+		return ret;
+
 	snd_soc_dapm_nc_pin(dapm, "INA1");
 	snd_soc_dapm_nc_pin(dapm, "INA2");
 	snd_soc_dapm_nc_pin(dapm, "INB1");
@@ -1037,26 +1071,32 @@ static struct snd_soc_dai_link tegra_max98088_dai[NUM_DAI_LINKS] = {
 };
 
 static int tegra30_soc_set_bias_level(struct snd_soc_card *card,
-					enum snd_soc_bias_level level)
+	struct snd_soc_dapm_context *dapm, enum snd_soc_bias_level level)
 {
 	struct tegra_max98088 *machine = snd_soc_card_get_drvdata(card);
 
 	if (machine->bias_level == SND_SOC_BIAS_OFF &&
-		level != SND_SOC_BIAS_OFF)
+		level != SND_SOC_BIAS_OFF && (!machine->clock_enabled)) {
+		machine->clock_enabled = 1;
 		tegra_asoc_utils_clk_enable(&machine->util_data);
-
-	machine->bias_level = level;
+		machine->bias_level = level;
+	}
 
 	return 0;
 }
 
 static int tegra30_soc_set_bias_level_post(struct snd_soc_card *card,
-					enum snd_soc_bias_level level)
+	struct snd_soc_dapm_context *dapm, enum snd_soc_bias_level level)
 {
 	struct tegra_max98088 *machine = snd_soc_card_get_drvdata(card);
 
-	if (level == SND_SOC_BIAS_OFF)
+	if (machine->bias_level != SND_SOC_BIAS_OFF &&
+		level == SND_SOC_BIAS_OFF && (machine->clock_enabled)) {
+		machine->clock_enabled = 0;
 		tegra_asoc_utils_clk_disable(&machine->util_data);
+	}
+
+	machine->bias_level = level;
 
 	return 0 ;
 }
@@ -1073,7 +1113,7 @@ static __devinit int tegra_max98088_driver_probe(struct platform_device *pdev)
 {
 	struct snd_soc_card *card = &snd_soc_tegra_max98088;
 	struct tegra_max98088 *machine;
-	struct tegra_max98088_platform_data *pdata;
+	struct tegra_asoc_platform_data *pdata;
 	int ret, i;
 
 	pdata = pdev->dev.platform_data;
@@ -1090,7 +1130,7 @@ static __devinit int tegra_max98088_driver_probe(struct platform_device *pdev)
 
 	machine->pdata = pdata;
 
-	ret = tegra_asoc_utils_init(&machine->util_data, &pdev->dev);
+	ret = tegra_asoc_utils_init(&machine->util_data, &pdev->dev, card);
 	if (ret)
 		goto err_free_machine;
 
@@ -1113,6 +1153,12 @@ static __devinit int tegra_max98088_driver_probe(struct platform_device *pdev)
 
 	machine->codec_info[BASEBAND].rate = pdata->baseband_param.rate;
 	machine->codec_info[BASEBAND].channels = pdata->baseband_param.channels;
+	machine->codec_info[BASEBAND].is_format_dsp = 0;
+
+	if ((pdata->baseband_param.bit_format == TEGRA_DAIFMT_DSP_A) ||
+	(pdata->baseband_param.bit_format == TEGRA_DAIFMT_DSP_B)) {
+			machine->codec_info[BASEBAND].is_format_dsp = 1;
+	}
 
 	tegra_max98088_dai[DAI_LINK_HIFI].cpu_dai_name =
 	tegra_max98088_i2s_dai_name[machine->codec_info[HIFI_CODEC].i2s_id];
@@ -1121,6 +1167,7 @@ static __devinit int tegra_max98088_driver_probe(struct platform_device *pdev)
 	tegra_max98088_i2s_dai_name[machine->codec_info[BT_SCO].i2s_id];
 #endif
 
+	card->dapm.idle_bias_off = 1;
 	ret = snd_soc_register_card(card);
 	if (ret) {
 		dev_err(&pdev->dev, "snd_soc_register_card failed (%d)\n",
@@ -1128,8 +1175,15 @@ static __devinit int tegra_max98088_driver_probe(struct platform_device *pdev)
 		goto err_switch_unregister;
 	}
 
+	if (!card->instantiated) {
+		dev_err(&pdev->dev, "No MAX98088 codec\n");
+		goto err_unregister_card;
+	}
+
 	return 0;
 
+err_unregister_card:
+	snd_soc_unregister_card(card);
 err_switch_unregister:
 #ifdef CONFIG_SWITCH
 	switch_dev_unregister(&wired_switch_dev);
@@ -1145,7 +1199,7 @@ static int __devexit tegra_max98088_driver_remove(struct platform_device *pdev)
 {
 	struct snd_soc_card *card = platform_get_drvdata(pdev);
 	struct tegra_max98088 *machine = snd_soc_card_get_drvdata(card);
-	struct tegra_max98088_platform_data *pdata = machine->pdata;
+	struct tegra_asoc_platform_data *pdata = machine->pdata;
 
 	snd_soc_unregister_card(card);
 

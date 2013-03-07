@@ -31,7 +31,7 @@
 #include <linux/workqueue.h>
 #include <linux/delay.h>
 #include "dsp.h"
-#include <mach/board-tf201-misc.h>
+#include <mach/board-cardhu-misc.h>
 
 #undef DUMP_REG
 
@@ -66,7 +66,8 @@
 #define MAX_RETRY (5)
 #define DEVICE_NAME		"dsp_fm34"
 
-#define DSP_POWER_1V8_EN_GPIO TEGRA_GPIO_PU5
+#define DSP_POWER_1V8_EN_GPIO_TF201 TEGRA_GPIO_PU5
+#define DSP_POWER_1V8_EN_GPIO_TF201X TEGRA_GPIO_PP3
 
 struct i2c_client *fm34_client;
 
@@ -239,9 +240,18 @@ int fm34_config_DSP(void)
 		else
 			FM34_INFO("DSP ACK,  read 0x%x: %d\n", buf1, ret);
 
-		FM34_INFO("Load TF201 DSP parameters\n");
-		config_length= sizeof(input_parameter);
-		config_table= (u8 *)input_parameter;
+		if(tegra3_get_project_id() == TEGRA3_PROJECT_TF700T){
+			FM34_INFO("Load TF700T DSP parameters\n");
+			config_length= sizeof(input_parameter_TF700T);
+			config_table= (u8 *)input_parameter_TF700T;
+		}else if(tegra3_get_project_id() == TEGRA3_PROJECT_TF201){
+			config_length= sizeof(input_parameter_TF201);
+			config_table= (u8 *)input_parameter_TF201;
+		}else{
+			FM34_INFO("Load  DSP parameters\n");
+			config_length= sizeof(input_parameter);
+			config_table= (u8 *)input_parameter;
+		}
 
 		ret = fm34_i2c_retry(dsp_chip->client, config_table, config_length);
 		FM34_INFO("config_length = %d\n", config_length);
@@ -454,8 +464,12 @@ long fm34_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 							fm34_i2c_retry(dsp_chip->client, (u8 *)enable_parameter,
 										sizeof(enable_parameter));
 
-							FM34_INFO("Disable Noise Suppression (for TF201)\n");
-							fm34_i2c_retry(dsp_chip->client, (u8 *)TF201_disable_NS,
+							FM34_INFO("Disable Noise Suppression\n");
+							if(tegra3_get_project_id() == TEGRA3_PROJECT_TF700T)
+								fm34_i2c_retry(dsp_chip->client, (u8 *)TF700T_disable_NS,
+										sizeof(TF700T_disable_NS));
+							else
+								fm34_i2c_retry(dsp_chip->client, (u8 *)TF201_disable_NS,
 										sizeof(TF201_disable_NS));
 						}
 						else if(output_source==OUTPUT_SOURCE_VOICE || input_agc==INPUT_SOURCE_AGC){
@@ -463,8 +477,12 @@ long fm34_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 							fm34_i2c_retry(dsp_chip->client, (u8 *)enable_parameter,
 										sizeof(enable_parameter));
 
-							FM34_INFO("Enable Noise Suppression (for TF201)\n");
-							fm34_i2c_retry(dsp_chip->client, (u8 *)TF201_enable_NS,
+							FM34_INFO("Enable Noise Suppression\n");
+							if(tegra3_get_project_id() == TEGRA3_PROJECT_TF700T)
+								fm34_i2c_retry(dsp_chip->client, (u8 *)TF700T_enable_NS,
+										sizeof(TF700T_enable_NS));
+							else
+								fm34_i2c_retry(dsp_chip->client, (u8 *)TF201_enable_NS,
 										sizeof(TF201_enable_NS));
 						}
 						else{
@@ -488,8 +506,12 @@ long fm34_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 							fm34_i2c_retry(dsp_chip->client, (u8 *)enable_parameter,
 										 sizeof(enable_parameter));
 
-							FM34_INFO("Enable Noise Suppression (for TF201)\n");
-							fm34_i2c_retry(dsp_chip->client, (u8 *)TF201_enable_NS,
+							FM34_INFO("Enable Noise Suppression\n");
+							if(tegra3_get_project_id() == TEGRA3_PROJECT_TF700T)
+								fm34_i2c_retry(dsp_chip->client, (u8 *)TF700T_enable_NS,
+										sizeof(TF700T_enable_NS));
+							else
+								fm34_i2c_retry(dsp_chip->client, (u8 *)TF201_enable_NS,
 										sizeof(TF201_enable_NS));
 
                                                }
@@ -501,14 +523,22 @@ long fm34_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 
 							if(input_source==INPUT_SOURCE_VR){
 
-								FM34_INFO("Disable Noise Suppression (for TF201)\n");
-								fm34_i2c_retry(dsp_chip->client, (u8 *)TF201_disable_NS,
+								FM34_INFO("Disable Noise Suppression\n");
+								if(tegra3_get_project_id() == TEGRA3_PROJECT_TF700T)
+									fm34_i2c_retry(dsp_chip->client, (u8 *)TF700T_disable_NS,
+										sizeof(TF700T_disable_NS));
+								else
+									fm34_i2c_retry(dsp_chip->client, (u8 *)TF201_disable_NS,
                                                                                 sizeof(TF201_disable_NS));
 
 							}
 							else{
-								FM34_INFO("Enable Noise Suppression (for TF201)\n");
-								fm34_i2c_retry(dsp_chip->client, (u8 *)TF201_enable_NS,
+								FM34_INFO("Enable Noise Suppression\n");
+								if(tegra3_get_project_id() == TEGRA3_PROJECT_TF700T)
+									fm34_i2c_retry(dsp_chip->client, (u8 *)TF700T_enable_NS,
+										sizeof(TF700T_enable_NS));
+								else
+									fm34_i2c_retry(dsp_chip->client, (u8 *)TF201_enable_NS,
 										sizeof(TF201_enable_NS));
 							}
 #endif  //BYPASS_DSP_FOR_VR
@@ -662,17 +692,63 @@ void fm34_reconfig(void)
 	bConfigured=false;
 	fm34_config_DSP();
 }
+void fm34_power_switch(int state)
+{
+	unsigned dsp_1v8_power_control;
+	u32 project_info = tegra3_get_project_id();
+
+	if(project_info == TEGRA3_PROJECT_TF201)
+		dsp_1v8_power_control = DSP_POWER_1V8_EN_GPIO_TF201;
+	else if(project_info == TEGRA3_PROJECT_TF300T)
+		dsp_1v8_power_control = DSP_POWER_1V8_EN_GPIO_TF201X;
+	else
+		return;
+	if(state){
+		gpio_set_value(dsp_1v8_power_control, 1);
+		schedule_delayed_work(&config_dsp_work, 0);
+	}
+	else{
+		gpio_set_value(dsp_1v8_power_control, 0);
+		bConfigured=false;
+	}
+
+}
+
+void fm34_power_switch_init(void)
+{
+	unsigned dsp_1v8_power_control;
+	int ret = 0;
+	u32 project_info = tegra3_get_project_id();
+
+	if(project_info == TEGRA3_PROJECT_TF201)
+		dsp_1v8_power_control = DSP_POWER_1V8_EN_GPIO_TF201;
+	else if(project_info == TEGRA3_PROJECT_TF300T)
+		dsp_1v8_power_control = DSP_POWER_1V8_EN_GPIO_TF201X;
+	else
+		return;
+
+	//Enalbe dsp power 1.8V
+	tegra_gpio_enable(dsp_1v8_power_control);
+	ret = gpio_request(dsp_1v8_power_control, "dsp_power_1v8_en");
+	if (ret < 0)
+		pr_err("%s: gpio_request failed for gpio %s\n",
+			__func__, "DSP_POWER_1V8_EN_GPIO");
+	gpio_direction_output(dsp_1v8_power_control, 1);
+	pr_info("gpio %d set to %d\n", dsp_1v8_power_control, gpio_get_value(dsp_1v8_power_control));
+
+}
+
 
 static int fm34_suspend(struct device *dev)
 {
 	printk("fm34_suspend+\n");
 	int ret =0;
-	if(!strncmp(tegra3_get_project_name(), "TF201", TEGRA3_PROJECT_NAME_MAX_LEN)){
+
+	gpio_set_value(TEGRA_GPIO_PBB6, 0); /* Bypass DSP*/
+	u32 project_info = tegra3_get_project_id();
+	fm34_power_switch(0);
+	if(project_info == TEGRA3_PROJECT_TF201){
 		printk("%s(): project TF201\n", __func__);
-		flush_delayed_work_sync(&config_dsp_work);
-		gpio_set_value(DSP_POWER_1V8_EN_GPIO, 0);
-		pr_info("gpio %d set to %d\n", DSP_POWER_1V8_EN_GPIO, gpio_get_value(DSP_POWER_1V8_EN_GPIO));
-		bConfigured=false;
 		gpio_set_value(TEGRA_GPIO_PO3, 0);
 		//Set DAP2_FS to low in LP0 for voltage leaking.
 		tegra_gpio_enable(TEGRA_GPIO_PA2);
@@ -698,42 +774,39 @@ static int fm34_suspend(struct device *dev)
 static int fm34_resume(struct device *dev)
 {
 	printk("fm34_resume+\n");
-	if(!strncmp(tegra3_get_project_name(), "TF201", TEGRA3_PROJECT_NAME_MAX_LEN)){
+	u32 project_info = tegra3_get_project_id();
+
+	if(project_info == TEGRA3_PROJECT_TF201){
 		tegra_gpio_disable(TEGRA_GPIO_PW4);
 		tegra_gpio_disable(TEGRA_GPIO_PA2);
 		gpio_set_value(TEGRA_GPIO_PO3, 1);
-		printk("%s(): project TF201\n", __func__);
-		gpio_set_value(DSP_POWER_1V8_EN_GPIO, 1);
-		pr_info("gpio %d set to %d\n", DSP_POWER_1V8_EN_GPIO, gpio_get_value(DSP_POWER_1V8_EN_GPIO));
-		schedule_delayed_work(&config_dsp_work, 0);
 	}
+	fm34_power_switch(1);
 	printk("fm34_resume-\n");
 	return 0;
 }
 
 static int __init fm34_init(void)
 {
-	printk(KERN_INFO "%s+ #####\n", __func__);
-	int ret;
+	unsigned int project_info = 0;
+	project_info = tegra3_get_project_id();
 
-        //Enalbe dsp power 1.8V
-	if(!strncmp(tegra3_get_project_name(), "TF201", TEGRA3_PROJECT_NAME_MAX_LEN)){
-		printk("%s(): project TF201\n", __func__);
-		tegra_gpio_enable(DSP_POWER_1V8_EN_GPIO);
-		ret = gpio_request(DSP_POWER_1V8_EN_GPIO, "dsp_power_1v8_en");
-		if (ret < 0)
-			pr_err("%s: gpio_request failed for gpio %s\n",
-				__func__, "DSP_POWER_1V8_EN_GPIO");
-		gpio_direction_output(DSP_POWER_1V8_EN_GPIO, 1);
+	if(project_info == TEGRA3_PROJECT_TF500T ||
+		project_info == TEGRA3_PROJECT_P1801)
+		return 0;
+	else{
+		printk(KERN_INFO "%s+ #####\n", __func__);
+		int ret;
 
-		pr_info("gpio %d set to %d\n", DSP_POWER_1V8_EN_GPIO, gpio_get_value(DSP_POWER_1V8_EN_GPIO));
-        }
+		//Enalbe dsp power 1.8V
+		fm34_power_switch_init();
 
-	pr_info("%s()\n", __func__);
-	ret = i2c_add_driver(&fm34_driver);
+		pr_info("%s()\n", __func__);
+		ret = i2c_add_driver(&fm34_driver);
 
-	printk(KERN_INFO "%s- #####\n", __func__);
-	return ret;
+		printk(KERN_INFO "%s- #####\n", __func__);
+		return ret;
+	}
 }
 
 static void __exit fm34_exit(void)
