@@ -17,6 +17,8 @@ int blk_rq_append_bio(struct request_queue *q, struct request *rq,
 		      struct bio *bio);
 void blk_dequeue_request(struct request *rq);
 void __blk_queue_free_tags(struct request_queue *q);
+bool __blk_end_bidi_request(struct request *rq, int error,
+			    unsigned int nr_bytes, unsigned int bidi_bytes);
 
 void blk_rq_timed_out_timer(unsigned long data);
 void blk_delete_timer(struct request *);
@@ -28,6 +30,7 @@ void __generic_unplug_device(struct request_queue *);
  */
 enum rq_atomic_flags {
 	REQ_ATOM_COMPLETE = 0,
+	REQ_ATOM_URGENT = 1,
 };
 
 /*
@@ -42,6 +45,16 @@ static inline int blk_mark_rq_complete(struct request *rq)
 static inline void blk_clear_rq_complete(struct request *rq)
 {
 	clear_bit(REQ_ATOM_COMPLETE, &rq->atomic_flags);
+}
+
+static inline int blk_mark_rq_urgent(struct request *rq)
+{
+	return test_and_set_bit(REQ_ATOM_URGENT, &rq->atomic_flags);
+}
+
+static inline void blk_clear_rq_urgent(struct request *rq)
+{
+	clear_bit(REQ_ATOM_URGENT, &rq->atomic_flags);
 }
 
 /*
@@ -61,6 +74,7 @@ static inline struct request *__elv_next_request(struct request_queue *q)
 			rq = list_entry_rq(q->queue_head.next);
 			return rq;
 		}
+
 		/*
 		 * Flush request is running and flush request isn't queueable
 		 * in the drive, we can hold the queue till flush request is

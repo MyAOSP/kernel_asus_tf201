@@ -155,13 +155,8 @@ static struct elevator_type *elevator_get(const char *name)
 
 	e = elevator_find(name);
 	if (!e) {
-		char elv[ELV_NAME_MAX + strlen("-iosched")];
-
 		spin_unlock(&elv_list_lock);
-
-		snprintf(elv, sizeof(elv), "%s-iosched", name);
-
-		request_module("%s", elv);
+		request_module("%s-iosched", name);
 		spin_lock(&elv_list_lock);
 		e = elevator_find(name);
 	}
@@ -358,7 +353,7 @@ static struct request *elv_rqhash_find(struct request_queue *q, sector_t offset)
  * RB-tree support functions for inserting/lookup/removal of requests
  * in a sorted RB tree.
  */
-struct request *elv_rb_add(struct rb_root *root, struct request *rq)
+void elv_rb_add(struct rb_root *root, struct request *rq)
 {
 	struct rb_node **p = &root->rb_node;
 	struct rb_node *parent = NULL;
@@ -370,15 +365,12 @@ struct request *elv_rb_add(struct rb_root *root, struct request *rq)
 
 		if (blk_rq_pos(rq) < blk_rq_pos(__rq))
 			p = &(*p)->rb_left;
-		else if (blk_rq_pos(rq) > blk_rq_pos(__rq))
+		else if (blk_rq_pos(rq) >= blk_rq_pos(__rq))
 			p = &(*p)->rb_right;
-		else
-			return __rq;
 	}
 
 	rb_link_node(&rq->rb_node, parent, p);
 	rb_insert_color(&rq->rb_node, root);
-	return NULL;
 }
 EXPORT_SYMBOL(elv_rb_add);
 
@@ -420,8 +412,6 @@ void elv_dispatch_sort(struct request_queue *q, struct request *rq)
 	sector_t boundary;
 	struct list_head *entry;
 	int stop_flags;
-
-	BUG_ON(rq->cmd_flags & REQ_ON_PLUG);
 
 	if (q->last_merge == rq)
 		q->last_merge = NULL;
@@ -613,6 +603,41 @@ void elv_requeue_request(struct request_queue *q, struct request *rq)
 	__elv_add_request(q, rq, ELEVATOR_INSERT_REQUEUE);
 }
 
+/**
+ * elv_reinsert_request() - Insert a request back to the scheduler
+ * @q:		request queue where request should be inserted
+ * @rq:		request to be inserted
+ *
+ * This function returns the request back to the scheduler to be
+ * inserted as if it was never dispatched
+ *
+ * Return: 0 on success, error code on failure
+ */
+int elv_reinsert_request(struct request_queue *q, struct request *rq)
+{
+	int res;
+
+	if (!q->elevator->elevator_type->ops.elevator_reinsert_req_fn)
+		return -EPERM;
+
+	res = q->elevator->elevator_type->ops.elevator_reinsert_req_fn(q, rq);
+	if (!res) {
+		/*
+		 * it already went through dequeue, we need to decrement the
+		 * in_flight count again
+		 */
+		if (blk_account_rq(rq)) {
+			q->in_flight[rq_is_sync(rq)]--;
+			if (rq->cmd_flags & REQ_SORTED)
+				elv_deactivate_rq(q, rq);
+		}
+		rq->cmd_flags &= ~REQ_STARTED;
+		q->nr_sorted++;
+	}
+
+	return res;
+}
+
 void elv_drain_elevator(struct request_queue *q)
 {
 	static int printed;
@@ -660,8 +685,6 @@ void __elv_add_request(struct request_queue *q, struct request *rq, int where)
 	trace_block_rq_insert(q, rq);
 
 	rq->q = q;
-
-	BUG_ON(rq->cmd_flags & REQ_ON_PLUG);
 
 	if (rq->cmd_flags & REQ_SOFTBARRIER) {
 		/* barriers are scheduling boundary, update end_sector */
@@ -819,6 +842,11 @@ void elv_completed_request(struct request_queue *q, struct request *rq)
 {
 	struct elevator_queue *e = q->elevator;
 
+	if (test_bit(REQ_ATOM_URGENT, &rq->atomic_flags)) {
+		q->notified_urgent = false;
+		q->dispatched_urgent = false;
+		blk_clear_rq_urgent(rq);
+	}
 	/*
 	 * request is released from the driver, io must be done
 	 */
